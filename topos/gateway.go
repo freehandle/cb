@@ -7,8 +7,45 @@ import (
 	"sync"
 
 	"github.com/freehandle/breeze/crypto"
+	"github.com/freehandle/breeze/protocol/actions"
 	"github.com/freehandle/breeze/socket"
 )
+
+type Dresser interface {
+	Dress([]byte) []byte
+}
+
+func NewBreezeVoidDresser(pk crypto.PrivateKey, fee uint64) *BreezeVoidDresseer {
+	return &BreezeVoidDresseer{
+		secret: pk,
+		wallet: pk.PublicKey(),
+		fee:    fee,
+	}
+}
+
+type BreezeVoidDresseer struct {
+	secret crypto.PrivateKey
+	wallet crypto.Token
+	fee    uint64
+}
+
+func (b *BreezeVoidDresseer) SetFee(fee uint64) {
+	b.fee = fee
+}
+
+func (b *BreezeVoidDresseer) Dress(data []byte) []byte {
+	if actions.Kind(data) == actions.IVoid {
+		void := actions.ParseVoid(data)
+		if void == nil {
+			return data
+		}
+		void.Wallet = b.wallet
+		void.Fee = b.fee
+		void.Sign(b.secret)
+		return void.Serialize()
+	}
+	return data
+}
 
 type GatewayConfig struct {
 	NodeAddress string
@@ -16,6 +53,7 @@ type GatewayConfig struct {
 	Credentials crypto.PrivateKey
 	ListenPort  int
 	Validate    socket.ValidateConnection
+	Dresser     Dresser
 }
 
 type GatewayConnection struct {
@@ -33,12 +71,13 @@ func NewGateway(config GatewayConfig) chan error {
 		return finalize
 	}
 
+	fmt.Printf("gateway trying to connect to block provider: %v\n", config.NodeAddress)
 	conn, err := socket.Dial(config.NodeAddress, config.Credentials, config.NodeToken)
 	if err != nil {
 		finalize <- fmt.Errorf("could not connect to block provider: %v", err)
 		return finalize
 	}
-
+	fmt.Println("gateway connected to block provider")
 	action := make(chan []byte)
 	connection := make(chan GatewayConnection)
 
@@ -54,6 +93,7 @@ func NewGateway(config GatewayConfig) chan error {
 				if err != nil {
 					conn.Close()
 				} else {
+					fmt.Println("gateway accepted connection")
 					go WaitForActions(trustedConn, connection, action)
 				}
 			} else {
@@ -85,6 +125,9 @@ func NewGateway(config GatewayConfig) chan error {
 						conn.Shutdown()
 					}
 					lock.Unlock()
+				}
+				if config.Dresser != nil {
+					data = config.Dresser.Dress(data)
 				}
 				if err := conn.Send(append([]byte{MsgActionSubmit}, data...)); err != nil {
 					log.Printf("could not send action to block provider: %v", err)
