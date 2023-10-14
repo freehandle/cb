@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 
+	"github.com/freehandle/breeze/consensus/chain"
 	"github.com/freehandle/breeze/crypto"
 	"github.com/freehandle/breeze/socket"
 	"github.com/freehandle/breeze/util"
@@ -12,6 +13,71 @@ import (
 )
 
 const buffersize = 1 >> 24 // 16MB
+
+type BlockProviderConfig struct {
+	NodeAddress string
+	NodeToken   crypto.Token
+	Credentials crypto.PrivateKey
+	ListenPort  int
+	Validate    socket.ValidateConnection
+	Store       *social.BlockStore
+}
+
+func BlockProviderNode(config BlockProviderConfig) chan error {
+	finalize := make(chan error, 2)
+
+	listeners, err := net.Listen("tcp", fmt.Sprintf(":%v", port))
+	if err != nil {
+		finalize <- fmt.Errorf("could not listen on port %v: %v", port, err)
+		return finalize
+	}
+
+	source, err := socket.Dial(config.NodeAddress, config.Credentials, config.NodeToken)
+	if err != nil {
+		finalize <- fmt.Errorf("could not connect to block provider node %v: %v", config.NodeAddress, err)
+	}
+
+	
+
+	go func() {
+		notCommit := make(chan []byte, 0)
+		block := make([]byte,0)
+		for {
+			data, err := source.Read()
+			if err != nil {
+				listeners.Close() // force finalize of listener connection
+				return
+			}
+			if len(data) == 0 {
+				continue
+			}
+			switch data[0] {
+			case chain.MsgNewBlock:
+
+				
+
+
+		}
+	}()
+
+	go func() {
+		for {
+			conn, err := listeners.Accept()
+			if err != nil {
+				finalize <- err
+				return
+			}
+			trustedConn, err := socket.PromoteConnection(conn, config.Credentials, config.Validate)
+			if err != nil {
+				conn.Close()
+			} else {
+				go TransmitBlocks(trustedConn, config.Store)
+			}
+		}
+	}()
+
+	return finalize
+}
 
 func NewBlockProvider(port int, pk crypto.PrivateKey, validate socket.ValidateConnection, store *social.BlockStore) chan error {
 	finalize := make(chan error, 2)
