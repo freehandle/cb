@@ -6,6 +6,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/freehandle/breeze/consensus/chain"
 	"github.com/freehandle/breeze/crypto"
 	"github.com/freehandle/breeze/protocol/actions"
 	"github.com/freehandle/breeze/socket"
@@ -114,6 +115,7 @@ func NewGateway(config GatewayConfig) chan error {
 				}
 				lock.Unlock()
 				if shutdown && len(live) == 0 {
+					fmt.Println("gateway shutting down")
 					finalize <- nil
 					return
 				}
@@ -122,6 +124,7 @@ func NewGateway(config GatewayConfig) chan error {
 					lock.Lock()
 					shutdown = true
 					for _, conn := range live {
+						fmt.Println("connection shutting down")
 						conn.Shutdown()
 					}
 					lock.Unlock()
@@ -129,7 +132,7 @@ func NewGateway(config GatewayConfig) chan error {
 				if config.Dresser != nil {
 					data = config.Dresser.Dress(data)
 				}
-				if err := conn.Send(append([]byte{MsgActionSubmit}, data...)); err != nil {
+				if err := conn.Send(append([]byte{chain.MsgActionSubmit}, data...)); err != nil {
 					log.Printf("could not send action to block provider: %v", err)
 				}
 			}
@@ -142,7 +145,8 @@ func NewGateway(config GatewayConfig) chan error {
 func WaitForActions(conn *socket.SignedConnection, terminate chan GatewayConnection, action chan []byte) {
 	for {
 		data, err := conn.Read()
-		if err != nil || len(data) < 2 || data[0] != MsgActionSubmit {
+		if err != nil || len(data) < 2 || data[0] != chain.MsgActionSubmit {
+			fmt.Println("invalid action", data, err)
 			conn.Shutdown()
 			terminate <- GatewayConnection{Conn: conn, Live: false}
 			return

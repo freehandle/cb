@@ -43,6 +43,7 @@ func (b *BlockStore) GetBlock(epoch int) []byte {
 }
 
 func (b *BlockStore) New(header chain.BlockHeader) {
+	fmt.Println("new block", header.Epoch)
 	if b.Current != nil {
 		b.Unselaed = append(b.Unselaed, b.Current)
 	}

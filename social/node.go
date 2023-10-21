@@ -20,7 +20,7 @@ type ProtocolValidatorNodeConfig struct {
 	KeepNBlocks        int
 }
 
-func LaunchNode[M Merger[M], B Blocker[M]](config ProtocolValidatorNodeConfig, blockchain *UniversalChain[M, B]) chan error {
+func LaunchNode[M Merger[M], B Blocker[M]](config ProtocolValidatorNodeConfig, blockchain *SocialBlockChain[M, B]) chan error {
 	finalize := make(chan error, 2)
 
 	outgoing, err := net.Listen("tcp", fmt.Sprintf(":%v", config.Port))
@@ -35,18 +35,23 @@ func LaunchNode[M Merger[M], B Blocker[M]](config ProtocolValidatorNodeConfig, b
 	pool := make(socket.ConnectionPool)
 
 	go func() {
-		var signal BlockSignal
-		messages := BreezeBlockListener(config, blockchain.epoch, &signal)
+		messages := BreezeBlockListener(config, blockchain.epoch)
 		for {
-			msg := <-messages
-			switch msg {
+			signal := <-messages
+			switch signal.Signal {
 			case ErrSignal:
 				finalize <- signal.Err
 				return
 			case NewBlockSignal:
 				newBlock <- struct{}{}
-				blockchain.NewBlock()
-				forward <- NewBlockSocial(blockchain.epoch)
+				blockchain.Lock()
+				fmt.Println("------------------------> new", signal.Epoch)
+				if err := blockchain.NextBlock(signal.Epoch); err == nil {
+					forward <- NewBlockSocial(blockchain.epoch)
+				} else {
+					log.Printf("LaunchNode> %v", err)
+				}
+				blockchain.Unlock()
 			case ActionSignal:
 				if blockchain.Validate(signal.Action) {
 					forward <- ActionSocial(signal.Action)
@@ -58,17 +63,23 @@ func LaunchNode[M Merger[M], B Blocker[M]](config ProtocolValidatorNodeConfig, b
 					}
 				}
 			case SealSignal:
-				if hash, err := blockchain.SealBlock(signal.Epoch); err == nil {
+				blockchain.Lock()
+				fmt.Println("------------------------> seal", signal.Epoch)
+				if hash, err := blockchain.SealBlock(signal.Epoch, signal.Hash); err == nil {
 					forward <- SealBlockSocial(signal.Epoch, hash)
 				} else {
-					log.Print(err)
+					log.Printf("LaunchNode> %v", err)
 				}
+				blockchain.Unlock()
 			case CommitSignal:
-				if invalidated, err := blockchain.CommitBlock(signal.Epoch, signal.HashArray); err == nil {
+				blockchain.Lock()
+				fmt.Println("------------------------> commit", signal.Epoch)
+				if invalidated, err := blockchain.Commit(signal.Epoch, signal.HashArray); err == nil {
 					forward <- CommitBlockSocial(signal.Epoch, invalidated)
 				} else {
-					log.Print(err)
+					log.Printf("LaunchNode> %v", err)
 				}
+				blockchain.Unlock()
 			}
 		}
 	}()
@@ -97,7 +108,9 @@ func LaunchNode[M Merger[M], B Blocker[M]](config ProtocolValidatorNodeConfig, b
 			case req := <-blockSyncRequest:
 				cached := socket.NewCachedConnection(req.conn)
 				pool.Add(cached)
-				go blockchain.Sync(cached, req.epoch)
+				blockchain.Lock()
+				blockchain.Sync(cached, req.epoch)
+				blockchain.Unlock()
 			}
 		}
 

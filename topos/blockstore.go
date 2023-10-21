@@ -1,6 +1,7 @@
 package topos
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -26,9 +27,9 @@ type BlockProviderConfig struct {
 func BlockProviderNode(config BlockProviderConfig) chan error {
 	finalize := make(chan error, 2)
 
-	listeners, err := net.Listen("tcp", fmt.Sprintf(":%v", port))
+	listeners, err := net.Listen("tcp", fmt.Sprintf(":%v", config.ListenPort))
 	if err != nil {
-		finalize <- fmt.Errorf("could not listen on port %v: %v", port, err)
+		finalize <- fmt.Errorf("could not listen on port %v: %v", config.ListenPort, err)
 		return finalize
 	}
 
@@ -37,11 +38,9 @@ func BlockProviderNode(config BlockProviderConfig) chan error {
 		finalize <- fmt.Errorf("could not connect to block provider node %v: %v", config.NodeAddress, err)
 	}
 
-	
-
 	go func() {
-		notCommit := make(chan []byte, 0)
-		block := make([]byte,0)
+		notCommit := make(map[uint64]*social.ProtocolBuilder)
+		var block *social.ProtocolBuilder
 		for {
 			data, err := source.Read()
 			if err != nil {
@@ -53,10 +52,41 @@ func BlockProviderNode(config BlockProviderConfig) chan error {
 			}
 			switch data[0] {
 			case chain.MsgNewBlock:
-
-				
-
-
+				epoch, _ := util.ParseUint64(data, 1)
+				block = social.NewProtocolBuilder(epoch)
+			case chain.MsgAction:
+				action, _ := util.ParseByteArray(data, 1)
+				if block != nil {
+					block.AddAction(action)
+				} else {
+					log.Printf("BlockProviderNode, action received, but no active block")
+				}
+			case chain.MsgBlockSealed:
+				epochSeal, position := util.ParseUint64(data, 1)
+				var hash crypto.Hash
+				hash, _ = util.ParseHash(data, position)
+				if block, ok := notCommit[epochSeal]; ok && block.Building() {
+					seal := block.Seal()
+					if !seal.Equal(hash) {
+						log.Printf("BlockProviderNode, block seal does not match hash: %v", hash)
+					}
+				} else {
+					log.Printf("BlockProviderNode, block seal received for epoch %v, but no block found", epochSeal)
+				}
+			case chain.MsgBlockCommitted:
+				epochCommit, position := util.ParseUint64(data, 1)
+				invalidated, _ := util.ParseHashArray(data, position)
+				if block, ok := notCommit[epochCommit]; ok && block.Sealed() {
+					block.Finalize(invalidated, config.Credentials)
+					if err := config.Store.AddBlock(block.Bytes()); err == nil {
+						delete(notCommit, epochCommit)
+					} else {
+						log.Printf("BlockProviderNode, could not add block to block store: %v", err)
+					}
+				} else {
+					log.Printf("BlockProviderNode, block commit received for epoch %v, but no block found", epochCommit)
+				}
+			}
 		}
 	}()
 
@@ -106,56 +136,93 @@ func NewBlockProvider(port int, pk crypto.PrivateKey, validate socket.ValidateCo
 	return nil
 }
 
-func ReceiveBlocks(address string, token crypto.Token, pk crypto.PrivateKey, epoch uint64) (chan []byte, error) {
-	output := make(chan []byte, 2)
+func byteArrayToBlockArray(data []byte) []*social.ProtocolBlock {
+	position := 0
+	protocols := make([]*social.ProtocolBlock, 0)
+	for {
+		var protocol *social.ProtocolBlock
+		protocol, position = social.ParseProtocolBlockWithPosition(data, position)
+		if protocol != nil {
+			protocols = append(protocols, protocol)
+		} else {
+			log.Print("could not parse blocks from data")
+			return nil
+		}
+		if position >= len(data) {
+			return protocols
+		}
+	}
+}
+
+func ReceiveBlocks(address string, token crypto.Token, pk crypto.PrivateKey, epoch uint64) (chan *social.ProtocolBlock, uint64, error) {
+	if epoch == 0 {
+		return nil, 0, errors.New("epoch 0 is reserved for genesis block. start sync at epoch 1")
+	}
+	output := make(chan *social.ProtocolBlock, 2)
 	conn, err := socket.Dial(address, pk, token)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	bytes, err := conn.Read()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	lastEpoch, _ := util.ParseUint64(bytes, 0)
 	if lastEpoch < epoch {
-		output <- nil
-		return output, nil
+		output <- nil // signal end of transmission
+		return output, lastEpoch, nil
 	}
 	go func() {
-		for n := epoch; n <= lastEpoch; n++ {
-			blocks, err := conn.Read()
+		defer conn.Shutdown()
+		for {
+			data, err := conn.Read()
 			if err != nil {
 				output <- nil
 				return
 			}
-			if len(blocks) < 8 {
+			// invalid transmission
+			if len(data) < 8 {
 				conn.Shutdown()
 				log.Printf("ReceiveBlocks, could not receive blocks from connection token %v: %v", conn.Token, err)
 				output <- nil
 			}
-			if len(blocks) == 8 {
+			// end of transmission signal
+			if len(data) == 8 && data[0]+data[1]+data[2]+data[3]+data[4]+data[5]+data[6]+data[7] == 0 {
+				if epoch != lastEpoch {
+					log.Printf("ReceiveBlocks, could not receive all blocks. Last %v instead of %v", epoch, lastEpoch)
+				}
 				output <- nil
 				return
 			}
-			count, position := util.ParseUint64(blocks, 0)
-			for n := uint64(0); n < count; n++ {
-				block, position := util.ParseByteArray(blocks, position)
-				output <- block
-				if position >= len(blocks) {
-					break
+			// parse blocks
+			blocks := byteArrayToBlockArray(data)
+			if blocks == nil {
+				log.Printf("ReceiveBlocks, could not parse blocks from data")
+				output <- nil
+				return
+			}
+			for _, block := range blocks {
+				if epoch == block.Epoch {
+					output <- block
+					if epoch < lastEpoch {
+						epoch = epoch + 1
+					}
+				} else {
+					log.Printf("ReceiveBlocks, blocks out of order %v instead of %v", block.Epoch, epoch)
 				}
 			}
 		}
-		output <- nil // signal end of transmission
-		bytes, err := conn.Read()
-		if err != nil || len(bytes) != 8 || (bytes[0]+bytes[1]+bytes[2]+bytes[3]+bytes[4]+bytes[5]+bytes[6]+bytes[7] > 0) {
-			log.Printf("ReceiveBlocks, could not receive confirmation of end of transmission from token %v", conn.Token)
-			return
-		}
 	}()
-	return output, nil
+	return output, lastEpoch, nil
 }
 
+// Transmit clocks send to conn requested blocks from store.
+// The transmitter sends the receiver 8 bytes indicating the last epoch for which
+// there are blocks available. It then waits the receiver to send 8 bytes indicating
+// the first epoch the receiver wants blocks to be transmitted.
+// If the receiver requests blocks from an epoch that is greater than the last epoch
+// the transmiteer send 8 zero bytes indicating there are no blocks to be transmitted.
+// Other
 func TransmitBlocks(conn *socket.SignedConnection, store *social.BlockStore) {
 	defer conn.Shutdown()
 	last := store.Epoch
@@ -177,23 +244,20 @@ func TransmitBlocks(conn *socket.SignedConnection, store *social.BlockStore) {
 		conn.Send(zero)
 		return
 	}
+	if start == 0 {
+		start = 1 // block 0 is exclusive for breeze genesis block
+	}
 	buffer := make([]byte, 0)
-	bufferCount := 0
 	for epoch := start; epoch <= last; epoch++ {
 		block := store.GetBlock(int(epoch))
 		buffer = append(buffer, block...)
-		bufferCount += 1
 		if len(buffer) > buffersize || epoch == last {
-			bytes := make([]byte, 0)
-			util.PutUint64(uint64(bufferCount), &bytes)
-			buffer = append(bytes, buffer...)
 			err := conn.Send(buffer)
 			if err != nil {
 				log.Printf("BroadcastBlock, could not send blocks to connection token %v: %v", conn.Token, err)
 				return
 			}
 			buffer = buffer[:0]
-			bufferCount = 0
 		}
 	}
 }

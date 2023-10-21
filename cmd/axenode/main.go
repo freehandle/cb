@@ -28,7 +28,7 @@ func main() {
 	}
 
 	s := attorney.NewGenesisState("")
-	chain := social.NewUniversalChain[*attorney.Mutations, *attorney.MutatingState](s, 0)
+	chain := social.NewSocialBlockChain[*attorney.Mutations, *attorney.MutatingState](s, 0)
 	if chain == nil {
 		log.Fatal("wrong")
 	}

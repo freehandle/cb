@@ -18,18 +18,18 @@ const (
 	StatusCommit
 )
 
-type ActionBlock[M Merger[M]] struct {
+type SocialBlock[M Merger[M]] struct {
 	Epoch       uint64
 	Checkpoint  uint64
 	Origin      crypto.Hash
-	Actions     *chain.ActionArray // validated in the build phase against checkpoint
-	Invalidated []crypto.Hash      // invalidated in the commit phase
+	Actions     *chain.ActionArray
+	Invalidated []crypto.Hash
 	Status      byte
 	mutations   M
 }
 
-func (a *ActionBlock[M]) Clone() *ActionBlock[M] {
-	return &ActionBlock[M]{
+func (a *SocialBlock[M]) Clone() *SocialBlock[M] {
+	return &SocialBlock[M]{
 		Epoch:       a.Epoch,
 		Checkpoint:  a.Checkpoint,
 		Origin:      a.Origin,
@@ -39,201 +39,213 @@ func (a *ActionBlock[M]) Clone() *ActionBlock[M] {
 	}
 }
 
-type UniversalChain[M Merger[M], B Blocker[M]] struct {
-	mu              sync.Mutex
-	epoch           uint64 //live epoch
-	validator       B      // current block for new actions
-	liveBlock       *ActionBlock[M]
-	commitState     Stateful[M, B]
-	stateEpoch      uint64
-	lastCommitEpoch uint64            // lastCommitEpoch can be different to stateEpoch in clone mode
-	blocks          []*ActionBlock[M] // all blocks
-	recentBlocks    []*ActionBlock[M]
-	Transform       func([]byte) []byte
-	checksumEpoch   uint64
-}
-
-func NewUniversalChain[M Merger[M], B Blocker[M]](state Stateful[M, B], epoch uint64) *UniversalChain[M, B] {
-	return &UniversalChain[M, B]{
-		mu:              sync.Mutex{},
-		epoch:           epoch,
-		validator:       state.Validator(),
-		commitState:     state,
-		lastCommitEpoch: epoch,
-		blocks:          make([]*ActionBlock[M], 0),
-		recentBlocks:    make([]*ActionBlock[M], 0),
+func NewSocialBlockChain[M Merger[M], B Blocker[M]](state Stateful[M, B], epoch uint64) *SocialBlockChain[M, B] {
+	return &SocialBlockChain[M, B]{
+		mu:           sync.Mutex{},
+		epoch:        epoch,
+		validator:    state.Validator(),
+		commit:       state,
+		commitEpoch:  epoch,
+		recentBlocks: make([]*SocialBlock[M], 0),
 	}
 }
 
-func (c *UniversalChain[M, B]) Validate(action []byte) bool {
-	if c.Transform != nil {
-		action = c.Transform(action)
+type SocialBlockChain[M Merger[M], B Blocker[M]] struct {
+	mu            sync.Mutex
+	epoch         uint64              // live epoch
+	live          *SocialBlock[M]     // live block
+	validator     B                   //live validator
+	commit        Stateful[M, B]      // commit state
+	commitEpoch   uint64              // commit epoch
+	recentBlocks  []*SocialBlock[M]   // at least since checksum point
+	Transform     func([]byte) []byte // in case actions need to be transformed
+	checksumEpoch uint64              // epoch of the last checksum for recovery
+}
+
+func (s *SocialBlockChain[M, B]) Lock() {
+	s.mu.Lock()
+}
+
+func (s *SocialBlockChain[M, B]) Unlock() {
+	s.mu.Unlock()
+}
+
+func (s *SocialBlockChain[M, B]) Validate(action []byte) bool {
+	if s.Transform != nil {
+		action = s.Transform(action)
 	}
-	if len(action) > 0 {
-		return c.validator.Validate(action)
+	if len(action) > 0 && s.live != nil {
+		if s.validator.Validate(action) {
+			s.live.Actions.Append(action)
+			return true
+		}
 	}
 	return false
 }
 
-func (c *UniversalChain[M, B]) SealBlock(epoch uint64) (crypto.Hash, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, block := range c.blocks {
-		if block.Epoch == epoch {
-			if block.Status == StatusLive || block.Status == StatusDone {
-				block.Status = StatusSealed
-				if block.Actions == nil {
-					return crypto.ZeroValueHash, nil
-				}
-				return block.Actions.Hash(), nil
-			}
-			return crypto.ZeroHash, fmt.Errorf("SealBlock: block %v is not live or done", epoch)
-		}
+func (s *SocialBlockChain[M, B]) NextBlock(epoch uint64) error {
+	if epoch != s.epoch+1 {
+		return fmt.Errorf("non-sequential block is not allowed: %d not next vs proposed next of %d", s.epoch, epoch)
 	}
-
-	return crypto.ZeroHash, fmt.Errorf("SealBlock: block %v not found", epoch)
+	if s.live != nil {
+		s.live.Status = StatusDone
+		s.recentBlocks = append(s.recentBlocks, s.live)
+		s.live.mutations = s.validator.Mutations()
+	}
+	s.epoch += 1
+	s.live = &SocialBlock[M]{
+		Epoch:      s.epoch,
+		Checkpoint: s.commitEpoch,
+		Actions:    chain.NewActionArray(),
+		Status:     StatusLive,
+	}
+	s.validator = s.commit.Validator()
+	return nil
 }
 
-func (c *UniversalChain[M, B]) CommitBlock(epoch uint64, invalidated []crypto.Hash) ([]crypto.Hash, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, block := range c.blocks {
-		if block.Epoch == epoch {
-			if block.Status == StatusSealed {
-				block.Status = StatusCommit
-				return block.Invalidated, nil
-			}
-			return nil, fmt.Errorf("CommitBlock: block %v is not sealed", epoch)
-		}
+func (s *SocialBlockChain[M, B]) SealBlock(epoch uint64, hash crypto.Hash) (crypto.Hash, error) {
+	var sealed *SocialBlock[M]
+	if s.live != nil && s.live.Epoch == epoch {
+		s.recentBlocks = append(s.recentBlocks, s.live)
+		s.live = nil
+	} else {
+		sealed = s.findBlock(epoch)
 	}
-	return nil, fmt.Errorf("CommitBlock: block %v not found", epoch)
+	if sealed == nil {
+		return crypto.ZeroHash, fmt.Errorf("block %d not found", epoch)
+	}
+	if sealed.Status >= StatusSealed {
+		return crypto.ZeroHash, fmt.Errorf("block %d already sealed", epoch)
+	}
+	sealed.Status = StatusSealed
+	sealed.Origin = hash
+	return sealed.Actions.Hash(), nil
 }
 
-func (c *UniversalChain[M, B]) Incorporate(epoch uint64) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if epoch != c.stateEpoch+1 {
-		return fmt.Errorf("Incorporate non-sequential block: block epoch %v vs state epoch %v", epoch, c.stateEpoch)
+func (s *SocialBlockChain[M, B]) findBlock(epoch uint64) *SocialBlock[M] {
+	for _, block := range s.recentBlocks {
+		if block.Epoch == epoch {
+			return block
+		}
 	}
-	if c.liveBlock.Epoch == epoch {
-		fmt.Errorf("Incorporate: block %v is not finalized", epoch)
+	return nil
+}
+
+func (s *SocialBlockChain[M, B]) revalidate(actions *chain.ActionArray, invalidated []crypto.Hash) ([]crypto.Hash, M) {
+	notvalid := make(map[crypto.Hash]struct{})
+	for _, hash := range invalidated {
+		notvalid[hash] = struct{}{}
 	}
-	for _, block := range c.blocks {
+	validator := s.commit.Validator()
+	socialInvalidated := make([]crypto.Hash, 0)
+	for n := 0; n < actions.Len(); n++ {
+		action := actions.Get(n)
+		hash := crypto.Hasher(action)
+		if _, ok := notvalid[hash]; ok || !validator.Validate(action) {
+			socialInvalidated = append(socialInvalidated, hash)
+		}
+	}
+	return socialInvalidated, validator.Mutations()
+}
+
+func (s *SocialBlockChain[M, B]) Commit(epoch uint64, invalidated []crypto.Hash) ([]crypto.Hash, error) {
+	for _, block := range s.recentBlocks {
 		if block.Epoch == epoch {
 			if block.Status == StatusCommit {
-				c.commitState.Incorporate(block.mutations)
-				return nil
+				return nil, fmt.Errorf("block %d already committed", epoch)
+			} else if block.Status != StatusSealed {
+				return nil, fmt.Errorf("block %d not sealed", epoch)
 			}
-			return fmt.Errorf("Incorporate: block %v is not committed", epoch)
+			block.Status = StatusCommit
+			block.Invalidated, block.mutations = s.revalidate(block.Actions, invalidated)
+			s.commit.Incorporate(block.mutations)
+			s.commitEpoch = block.Epoch
+			return block.Invalidated, nil
+		} else if block.Status != StatusCommit {
+			return nil, fmt.Errorf("non-sequential commit is not allowed: %d not commit vs proposed commit of %d", block.Epoch, epoch)
 		}
 	}
-	return fmt.Errorf("could not find block %v", epoch)
+	return nil, fmt.Errorf("block %d not found", epoch)
 }
 
-func (c *UniversalChain[M, B]) Rollback(epoch uint64) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if epoch <= c.stateEpoch {
-		return fmt.Errorf("Rollback request to and epoch before state epoch: rollback to %v vs state epoch %v", epoch, c.stateEpoch)
+func (s *SocialBlockChain[M, B]) Rollback(epoch uint64) error {
+	if epoch < s.commitEpoch {
+		return fmt.Errorf("Rollback request to a commit epoch: rollback to %v vs commit %v", epoch, s.commitEpoch)
 	}
-	lastCommit := c.stateEpoch
-	for n, block := range c.blocks {
-		if block.Status == StatusCommit {
-			lastCommit = block.Epoch
-		}
+	for n, block := range s.recentBlocks {
 		if block.Epoch == epoch {
-			c.blocks = c.blocks[:n]
-			c.lastCommitEpoch = lastCommit
+			s.recentBlocks = s.recentBlocks[:n]
+			s.live = nil
+			s.epoch = epoch
 			return nil
 		}
 	}
 	return fmt.Errorf("Rollback: could not find block %v", epoch)
 }
 
-func (c *UniversalChain[M, B]) NewBlock() uint64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.epoch += 1
-	mutations := make([]M, 0)
-	for _, block := range c.blocks {
-		if block.Epoch <= c.lastCommitEpoch {
-			if block.Status == StatusCommit {
-				mutations = append(mutations, block.mutations)
-			} else {
-				log.Printf("found non-commit %v before lastcommitEpoch %v", block.Epoch, c.lastCommitEpoch)
-				return 0
-			}
-		}
-		if block.Epoch == c.lastCommitEpoch {
-			c.validator = c.commitState.Validator(mutations...)
-			return c.epoch
-		}
-	}
-	return 0
-}
-
-func (c *UniversalChain[M, B]) Recovery(epoch uint64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if epoch < c.checksumEpoch {
-		log.Printf("Recovery request to an epoch before checksum: rollback to %v vs checksum epoch %v", epoch, c.checksumEpoch)
+func (s *SocialBlockChain[M, B]) Recovery(epoch uint64) {
+	if epoch < s.checksumEpoch {
+		log.Printf("Recovery request to an epoch before checksum: rollback to %v vs checksum epoch %v", epoch, s.checksumEpoch)
 		return
 	}
-	if epoch > c.stateEpoch {
-		log.Printf("Recovery request to an epoch after state epoch: rollback to %v vs state epoch %v", epoch, c.stateEpoch)
+	if epoch >= s.commitEpoch {
+		log.Printf("Recovery request to an epoch after commit epoch: rollback to %v vs commit epoch %v", epoch, s.commitEpoch)
 		return
 	}
 	var mutations M
-	for n, block := range c.recentBlocks {
-		if block.Epoch == c.checksumEpoch+1 {
+	for n, block := range s.recentBlocks {
+		if block.Epoch == s.checksumEpoch+1 {
 			mutations = block.mutations
 
-		} else if block.Epoch > c.checksumEpoch+1 && block.Epoch <= epoch {
+		} else if block.Epoch > s.checksumEpoch+1 && block.Epoch <= epoch {
 			mutations.Merge(block.mutations)
 		}
 		if block.Epoch == epoch {
-			c.recentBlocks = c.recentBlocks[:n]
+			s.recentBlocks = s.recentBlocks[:n]
 			break
 		}
 	}
-	c.commitState.Recover()
-	c.commitState.Incorporate(mutations)
-	c.lastCommitEpoch = epoch
-	c.blocks = c.blocks[:0]
-	c.commitState.Incorporate(mutations)
+	s.commit.Recover()
+	s.commit.Incorporate(mutations)
+	s.commitEpoch = epoch
+	s.live = nil
 }
 
-func (c *UniversalChain[M, B]) Sync(conn *socket.CachedConnection, epoch uint64) {
+func (c *SocialBlockChain[M, B]) Sync(conn *socket.CachedConnection, epoch uint64) {
 	c.mu.Lock()
-	syncBlocks := make([]*ActionBlock[M], 0)
+	defer c.mu.Unlock()
+	syncBlocks := make([]*SocialBlock[M], 0)
 	for _, block := range c.recentBlocks {
 		if block.Epoch > epoch && block.Epoch < c.epoch {
 			syncBlocks = append(syncBlocks, block)
 		}
 	}
-	syncBlocks = append(syncBlocks, c.liveBlock.Clone())
-	c.mu.Unlock()
-	for n, block := range syncBlocks {
-		bytes := []byte{chain.MsgProtocolNewBlock}
-		util.PutUint64(epoch, &bytes)
-		conn.SendDirect(bytes)
-		bytes = block.Actions.Serialize()
-		conn.SendDirect(append([]byte{chain.MsgProtocolActionArray}, bytes...))
-		if n == len(syncBlocks)-1 {
-			break
-		}
-		if block.Status >= StatusSealed {
-			bytes := []byte{chain.MsgProtocolSealBlock}
-			util.PutUint64(epoch, &bytes)
-			util.PutHash(block.Actions.Hash(), &bytes)
-			conn.SendDirect(bytes)
-		}
-		if block.Status >= StatusCommit {
-			bytes := []byte{chain.MsgProtocolCommitBlock}
-			util.PutUint64(epoch, &bytes)
-			util.PutHashArray(block.Invalidated, &bytes)
-			conn.SendDirect(bytes)
-		}
+	if c.live != nil {
+		syncBlocks = append(syncBlocks, c.live.Clone())
 	}
-	conn.Ready()
+	go func() {
+		for n, block := range syncBlocks {
+			bytes := []byte{chain.MsgProtocolNewBlock}
+			util.PutUint64(epoch, &bytes)
+			conn.SendDirect(bytes)
+			bytes = block.Actions.Serialize()
+			conn.SendDirect(append([]byte{chain.MsgProtocolActionArray}, bytes...))
+			if n == len(syncBlocks)-1 {
+				break
+			}
+			if block.Status >= StatusSealed {
+				bytes := []byte{chain.MsgProtocolSealBlock}
+				util.PutUint64(epoch, &bytes)
+				util.PutHash(block.Actions.Hash(), &bytes)
+				conn.SendDirect(bytes)
+			}
+			if block.Status >= StatusCommit {
+				bytes := []byte{chain.MsgProtocolCommitBlock}
+				util.PutUint64(epoch, &bytes)
+				util.PutHashArray(block.Invalidated, &bytes)
+				conn.SendDirect(bytes)
+			}
+		}
+		conn.Ready()
+	}()
 }

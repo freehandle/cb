@@ -4,7 +4,7 @@ import (
 	"errors"
 
 	"github.com/freehandle/breeze/util"
-	"github.com/lienkolabs/papirus"
+	"github.com/freehandle/papirus"
 )
 
 type BlockIndex struct {
