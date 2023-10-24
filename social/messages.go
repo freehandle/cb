@@ -48,11 +48,11 @@ func CommitBlockSocial(epoch uint64, invalidated []crypto.Hash) []byte {
 	bytes := []byte{chain.MsgBlockCommitted}
 	util.PutUint64(epoch, &bytes)
 	util.PutHashArray(invalidated, &bytes)
-	return nil
+	return bytes
 }
 
 func ParseCommitBlockSocial(data []byte) (uint64, []crypto.Hash, error) {
-	if len(data) < 9+crypto.Size {
+	if len(data) < 9 {
 		return 0, nil, errors.New("ParseCommitBlockSocial: data too short")
 	}
 	epoch, _ := util.ParseUint64(data, 1)

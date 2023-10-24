@@ -99,7 +99,7 @@ func SocialProtocolBlockListener(address string, node crypto.Token, credentials 
 					log.Printf("SocialProtocolBlockListener: could not parse message: %v", err)
 				}
 				if block, ok := blocks[epoch]; ok {
-					block.Invalidayed = invalidated
+					block.Invalidated = invalidated
 					send <- block
 					delete(blocks, epoch)
 				} else {

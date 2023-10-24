@@ -45,7 +45,6 @@ func LaunchNode[M Merger[M], B Blocker[M]](config ProtocolValidatorNodeConfig, b
 			case NewBlockSignal:
 				newBlock <- struct{}{}
 				blockchain.Lock()
-				fmt.Println("------------------------> new", signal.Epoch)
 				if err := blockchain.NextBlock(signal.Epoch); err == nil {
 					forward <- NewBlockSocial(blockchain.epoch)
 				} else {
@@ -64,7 +63,6 @@ func LaunchNode[M Merger[M], B Blocker[M]](config ProtocolValidatorNodeConfig, b
 				}
 			case SealSignal:
 				blockchain.Lock()
-				fmt.Println("------------------------> seal", signal.Epoch)
 				if hash, err := blockchain.SealBlock(signal.Epoch, signal.Hash); err == nil {
 					forward <- SealBlockSocial(signal.Epoch, hash)
 				} else {
@@ -73,7 +71,6 @@ func LaunchNode[M Merger[M], B Blocker[M]](config ProtocolValidatorNodeConfig, b
 				blockchain.Unlock()
 			case CommitSignal:
 				blockchain.Lock()
-				fmt.Println("------------------------> commit", signal.Epoch)
 				if invalidated, err := blockchain.Commit(signal.Epoch, signal.HashArray); err == nil {
 					forward <- CommitBlockSocial(signal.Epoch, invalidated)
 				} else {
@@ -105,6 +102,7 @@ func LaunchNode[M Merger[M], B Blocker[M]](config ProtocolValidatorNodeConfig, b
 				pool.DropDead() // clear dead connections
 			case msg := <-forward:
 				pool.Broadcast(msg)
+				//fmt.Println(len(pool), msg)
 			case req := <-blockSyncRequest:
 				cached := socket.NewCachedConnection(req.conn)
 				pool.Add(cached)

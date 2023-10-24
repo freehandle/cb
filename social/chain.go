@@ -212,8 +212,6 @@ func (s *SocialBlockChain[M, B]) Recovery(epoch uint64) {
 }
 
 func (c *SocialBlockChain[M, B]) Sync(conn *socket.CachedConnection, epoch uint64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	syncBlocks := make([]*SocialBlock[M], 0)
 	for _, block := range c.recentBlocks {
 		if block.Epoch > epoch && block.Epoch < c.epoch {
@@ -224,23 +222,21 @@ func (c *SocialBlockChain[M, B]) Sync(conn *socket.CachedConnection, epoch uint6
 		syncBlocks = append(syncBlocks, c.live.Clone())
 	}
 	go func() {
-		for n, block := range syncBlocks {
-			bytes := []byte{chain.MsgProtocolNewBlock}
+		for _, block := range syncBlocks {
+			bytes := []byte{chain.MsgNewBlock}
 			util.PutUint64(epoch, &bytes)
 			conn.SendDirect(bytes)
 			bytes = block.Actions.Serialize()
-			conn.SendDirect(append([]byte{chain.MsgProtocolActionArray}, bytes...))
-			if n == len(syncBlocks)-1 {
-				break
-			}
+			conn.SendDirect(append([]byte{chain.MsgActionArray}, bytes...))
 			if block.Status >= StatusSealed {
-				bytes := []byte{chain.MsgProtocolSealBlock}
+				bytes := []byte{chain.MsgSealBlock}
 				util.PutUint64(epoch, &bytes)
 				util.PutHash(block.Actions.Hash(), &bytes)
 				conn.SendDirect(bytes)
 			}
 			if block.Status >= StatusCommit {
-				bytes := []byte{chain.MsgProtocolCommitBlock}
+				fmt.Println("commit block", block.Epoch)
+				bytes := []byte{chain.MsgCommitBlock}
 				util.PutUint64(epoch, &bytes)
 				util.PutHashArray(block.Invalidated, &bytes)
 				conn.SendDirect(bytes)

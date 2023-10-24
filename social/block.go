@@ -8,7 +8,7 @@ import (
 type ProtocolBlock struct {
 	Epoch       uint64
 	Actions     [][]byte
-	Invalidayed []crypto.Hash
+	Invalidated []crypto.Hash
 	Hash        crypto.Hash
 	Publisher   crypto.Token
 	Siganture   crypto.Signature
@@ -72,7 +72,7 @@ func (p *ProtocolBlock) Serialize() []byte {
 		util.PutByteArray(action, &bytes)
 	}
 	util.PutByteArray([]byte{}, &bytes)
-	util.PutHashArray(p.Invalidayed, &bytes)
+	util.PutHashArray(p.Invalidated, &bytes)
 	util.PutHash(p.Hash, &bytes)
 	util.PutToken(p.Publisher, &bytes)
 	util.PutSignature(p.Siganture, &bytes)
@@ -92,7 +92,7 @@ func ParseProtocolBlockWithPosition(data []byte, position int) (*ProtocolBlock, 
 		}
 		protocol.Actions = append(protocol.Actions, data)
 	}
-	protocol.Invalidayed, position = util.ParseHashArray(data, position)
+	protocol.Invalidated, position = util.ParseHashArray(data, position)
 	hash := crypto.Hasher(data[:position])
 	protocol.Hash, position = util.ParseHash(data, position)
 	if !hash.Equal(protocol.Hash) {

@@ -43,7 +43,6 @@ func (b *BlockStore) GetBlock(epoch int) []byte {
 }
 
 func (b *BlockStore) New(header chain.BlockHeader) {
-	fmt.Println("new block", header.Epoch)
 	if b.Current != nil {
 		b.Unselaed = append(b.Unselaed, b.Current)
 	}
@@ -95,7 +94,9 @@ func (b *BlockStore) AppendBlock(commit *chain.CommitBlock) {
 	index := BlockIndex{storagecount: len(b.Storage) - 1, offset: storage.Size()}
 	b.Blocks = append(b.Blocks, index)
 	storage.Append(prependSize(bytes))
-	fmt.Printf("block %v: %v actions\n", commit.Header.Epoch, commit.Actions.Len())
+	if commit.Actions.Len() > 0 {
+		fmt.Printf("block %v: %v actions\n", commit.Header.Epoch, commit.Actions.Len())
+	}
 }
 
 func (b *BlockStore) Commit(epoch uint64, commit chain.BlockCommit) {

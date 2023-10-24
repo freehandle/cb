@@ -36,6 +36,7 @@ func (b *BreezeVoidDresseer) SetFee(fee uint64) {
 
 func (b *BreezeVoidDresseer) Dress(data []byte) []byte {
 	if actions.Kind(data) == actions.IVoid {
+		fmt.Println("dressing void")
 		void := actions.ParseVoid(data)
 		if void == nil {
 			return data
