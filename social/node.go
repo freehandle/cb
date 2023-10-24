@@ -32,7 +32,6 @@ func LaunchNode[M Merger[M], B Blocker[M]](config ProtocolValidatorNodeConfig, b
 	blockSyncRequest := make(chan BlockSyncRequest)
 	forward := make(chan []byte)
 	newBlock := make(chan struct{})
-	pool := make(socket.ConnectionPool)
 
 	go func() {
 		messages := BreezeBlockListener(config, blockchain.epoch)
@@ -95,7 +94,9 @@ func LaunchNode[M Merger[M], B Blocker[M]](config ProtocolValidatorNodeConfig, b
 		}
 	}()
 
+	// connection pool loop: receive new connections, drop dead and broadcast
 	go func() {
+		pool := make(socket.ConnectionPool)
 		for {
 			select {
 			case <-newBlock:

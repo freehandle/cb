@@ -32,6 +32,11 @@ type BlockSignal struct {
 	Err        error
 }
 
+type Node struct {
+	Address string
+	Token   crypto.Token
+}
+
 func SocialProtocolBlockListener(address string, node crypto.Token, credentials crypto.PrivateKey, epoch uint64) chan *ProtocolBlock {
 	send := make(chan *ProtocolBlock, 2)
 	conn, err := socket.Dial(address, credentials, node)
