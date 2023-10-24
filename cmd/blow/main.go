@@ -4,6 +4,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/freehandle/axe/attorney"
@@ -13,6 +15,7 @@ import (
 	"github.com/freehandle/breeze/protocol/actions"
 	"github.com/freehandle/breeze/socket"
 	"github.com/freehandle/papirus"
+	"github.com/freehandle/safe"
 
 	"github.com/freehandle/cb/blocks"
 	"github.com/freehandle/cb/social"
@@ -118,7 +121,28 @@ func AxeBlockProvider(provider crypto.PrivateKey, source crypto.Token) chan erro
 	return topos.BlockProviderNode(config)
 }
 
+func safeServer(gateway crypto.Token, axe crypto.Token, safePK crypto.PrivateKey, path string) chan error {
+	config := safe.SafeConfig{
+		GatewayAddress: "localhost:5100",
+		GatewayToken:   gateway,
+		AxeAddress:     "localhost:6000",
+		AxeToken:       axe,
+		Credentials:    safePK,
+		Port:           7100,
+	}
+	return safe.NewServer(config, path)
+
+}
+
 func main() {
+	var safepath string
+	for _, env := range os.Environ() {
+		if strings.HasPrefix(env, "SAFE=") {
+			safepath = strings.TrimPrefix(env, "SAFE=")
+			break
+		}
+
+	}
 	var pk crypto.PrivateKey
 	bytesPk, _ := hex.DecodeString(pkHex)
 	copy(pk[:], bytesPk)
@@ -126,6 +150,7 @@ func main() {
 
 	_, axeValidatorCredentials := crypto.RandomAsymetricKey()
 	_, axeProviderCredentials := crypto.RandomAsymetricKey()
+	_, safeCredentials := crypto.RandomAsymetricKey()
 
 	breezeerr := breeze(pk)
 	time.Sleep(200 * time.Millisecond)
@@ -139,10 +164,13 @@ func main() {
 	time.Sleep(200 * time.Millisecond)
 	socailListener := testListener(axeProviderCredentials.PublicKey(), axeValidatorCredentials.PublicKey())
 	time.Sleep(200 * time.Millisecond)
+	safeServer := safeServer(myCredentials.PublicKey(), axeValidatorCredentials.PublicKey(), safeCredentials, safepath)
+	time.Sleep(200 * time.Millisecond)
+
 	go ListenAndServe(store) // block listener
 
-	go transferspacket(pk, myCredentials.PublicKey())
-	go axetest(pk, myCredentials.PublicKey())
+	//go transferspacket(pk, myCredentials.PublicKey())
+	//go axetest(pk, myCredentials.PublicKey())
 	select {
 	case err := <-blockErr:
 		log.Fatalf("block store unrecovarable error: %s", err)
@@ -156,6 +184,8 @@ func main() {
 		log.Fatalf("social listener unrecovarable error: %s", err)
 	case err := <-breezeerr:
 		log.Fatalf("breeze unrecovarable error: %s", err)
+	case err := <-safeServer:
+		log.Fatalf("safe server unrecovarable error: %s", err)
 	}
 }
 
