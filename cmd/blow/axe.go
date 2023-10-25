@@ -19,7 +19,7 @@ func AxeValidator(validator crypto.PrivateKey, source crypto.Token) chan error {
 		Port:               6000,
 		NodeCredentials:    validator,
 		ValidateOutgoing:   socket.AcceptAllConnections,
-		KeepNBlocks:        1000,
+		KeepNBlocks:        100000,
 	}
 	s := attorney.NewGenesisState("")
 	chain := social.NewSocialBlockChain[*attorney.Mutations, *attorney.MutatingState](s, 0)

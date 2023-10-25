@@ -1,8 +1,7 @@
 package main
 
 import (
-	"fmt"
-	"log"
+	"errors"
 
 	"github.com/freehandle/breeze/crypto"
 	"github.com/freehandle/cb/vault"
@@ -46,16 +45,9 @@ func synergyApp(gatewayToken crypto.Token, axeNodeToken crypto.Token, credential
 
 	attorney, finalize := api.NewGeneralAttorneyServer(config)
 	if attorney == nil {
-		fmt.Println("**************************************")
-		err := <-finalize
-		log.Printf("error creating attorney: %v", err)
-		fmt.Println("**************************************")
+		finalize <- errors.New("could not create attorney server")
 		return finalize
 	}
 	network.LaunchProxy("localhost:6000", "localhost:5100", axeNodeToken, gatewayToken, credentials, gateway, attorney)
-	fmt.Println("**************************************")
-	fmt.Println("Synergy Listeing on port 3000")
-	fmt.Println("**************************************")
 	return finalize
-	//network.NewProxy("localhost:4100", gatewayToken, credentials, gateway, attorney)
 }

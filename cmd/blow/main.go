@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"os"
 	"time"
 )
 
@@ -20,6 +22,16 @@ func main() {
 
 	environment := envs()
 
+	// blow breeze axe safe synergy
+
+	args := os.Args
+	if len(os.Args) > 1 && args[1] == "synergy" {
+		synergyErr := synergyApp(breezeGatewayPk.PublicKey(), axeNodePk.PublicKey(), synergyAppPk, synergyEphemeral, environment.EmailPassword, environment.SynergyPath) // 3000 (http)
+		err := <-synergyErr
+		fmt.Println(err)
+		return
+	}
+
 	breezeerr := breeze(breezeNodePk) // incoming 5005 outgoing 5006
 	time.Sleep(200 * time.Millisecond)
 	//store, blockErr := Blocks(breezeBlocksPk, breezeNodePk.PublicKey()) // incoming 5006 why no outgoing port??
@@ -32,7 +44,7 @@ func main() {
 	//time.Sleep(200 * time.Millisecond)
 
 	synergyErr := synergyApp(breezeGatewayPk.PublicKey(), axeNodePk.PublicKey(), synergyAppPk, synergyEphemeral, environment.EmailPassword, environment.SynergyPath) // 3000 (http)
-	time.Sleep(2000 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 	safeServer := safeServer(breezeGatewayPk.PublicKey(), axeNodePk.PublicKey(), safeAppPk, environment.SafePath) // 7100 (http)
 
 	//go ListenAndServe(store) // block listener
