@@ -34,8 +34,8 @@ func main() {
 
 	breezeerr := breeze(breezeNodePk) // incoming 5005 outgoing 5006
 	time.Sleep(200 * time.Millisecond)
-	//store, blockErr := Blocks(breezeBlocksPk, breezeNodePk.PublicKey()) // incoming 5006 why no outgoing port??
-	//time.Sleep(200 * time.Millisecond)
+	// store, blockErr := Blocks(breezeBlocksPk, breezeNodePk.PublicKey()) // incoming 5006 why no outgoing port??
+	// time.Sleep(200 * time.Millisecond)
 	gatewayErr := Gateway(breezeGatewayPk, breezeNodePk.PublicKey()) // port 5100
 	time.Sleep(200 * time.Millisecond)
 	axenode := AxeValidator(axeNodePk, breezeNodePk.PublicKey()) // port 6000
